@@ -1,17 +1,17 @@
-# chuks_di
+# di
 
 A dependency injection container for Chuks. Boot-time wiring with singleton, transient, and instance bindings. Circular dependency detection. Zero runtime overhead after boot.
 
 ## Installation
 
 ```bash
-chuks install chuks_di
+chuks add di
 ```
 
 ## Quick Start
 
 ```chuks
-import { Container } from "pkg/chuks_di"
+import { Container } from "pkg/di"
 
 var c = new Container()
 
@@ -176,7 +176,7 @@ await c.bootAsync()
 ## Real-World Example
 
 ```chuks
-import { Container } from "pkg/chuks_di"
+import { Container } from "pkg/di"
 import { createServer, Request, Response } from "std/http"
 import { json } from "std/json"
 import { dbConnection } from "./db/dbConnection"
