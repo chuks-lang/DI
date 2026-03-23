@@ -1,0 +1,360 @@
+// ─── chuks_di ───────────────────────────────────────────────────────────────
+// Dependency injection container for Chuks.
+// Boot-time wiring with singleton, transient, and instance bindings.
+// Circular dependency detection. Zero runtime overhead after boot.
+//
+// Usage:
+//   import { Container } from "pkg/chuks_di"
+//
+//   var c = new Container()
+//
+//   c.singleton("db", function(c: Container): any {
+//       return dbConnection()
+//   })
+//
+//   c.singletonAsync("userRepo", async function(c: Container): Task<any> {
+//       var repo = new UserRepo()
+//       await repo.useConnection(c.resolve("db"))
+//       return repo
+//   })
+//
+//   c.instance("port", 3000)
+//   await c.bootAsync()
+//
+//   var repo = c.resolve("userRepo")
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─── Binding Types ──────────────────────────────────────────────────────────
+// Internal constants for binding classification.
+
+var BINDING_SINGLETON: string = "singleton"
+var BINDING_SINGLETON_ASYNC: string = "singleton_async"
+var BINDING_TRANSIENT: string = "transient"
+var BINDING_INSTANCE: string = "instance"
+
+// ─── Binding ────────────────────────────────────────────────────────────────
+// Internal representation of a registered dependency.
+
+class Binding {
+    var kind: string
+    var factory: any
+    var asyncFactory: any
+    var value: any
+    var resolved: bool
+
+    constructor(kind: string, factory: any, asyncFactory: any, value: any) {
+        this.kind = kind
+        this.factory = factory
+        this.asyncFactory = asyncFactory
+        this.value = value
+        this.resolved = false
+    }
+}
+
+// ─── Container ──────────────────────────────────────────────────────────────
+// The IoC container. Register dependencies at startup, boot once, then resolve
+// cached singletons by name. After bootAsync(), resolve() is a single map read.
+//
+// Circular dependency detection runs during boot — if A depends on B and B
+// depends on A, the container throws immediately with the full cycle path.
+
+export class Container {
+    var bindings: map[string]any
+    var instances: map[string]any
+    var order: []string
+    var booted: bool
+    var resolving: map[string]bool
+
+    constructor() {
+        this.bindings = {}
+        this.instances = {}
+        this.order = []
+        this.booted = false
+        this.resolving = {}
+    }
+
+    // ── Registration ────────────────────────────────────────────────────
+
+    /*
+      Register a singleton with a synchronous factory.
+      The factory receives this container so it can resolve other dependencies.
+      Runs once during bootAsync(), result cached forever.
+    */
+    public singleton(name: string, factory: any): void {
+        if (this.booted) {
+            throw new Error("Container is booted — cannot register '" + name + "'")
+        }
+        var binding = new Binding(BINDING_SINGLETON, factory, null, null)
+        this.bindings[name] = binding
+        this.order.push(name)
+    }
+
+    /*
+      Register a singleton with an async factory.
+      Use this for dependencies that require await (e.g. database connections).
+      Runs once during bootAsync(), result cached forever.
+    */
+    public singletonAsync(name: string, asyncFactory: any): void {
+        if (this.booted) {
+            throw new Error("Container is booted — cannot register '" + name + "'")
+        }
+        var binding = new Binding(BINDING_SINGLETON_ASYNC, null, asyncFactory, null)
+        this.bindings[name] = binding
+        this.order.push(name)
+    }
+
+    /*
+      Register a transient factory.
+      A new instance is created on every resolve() call.
+      The factory receives this container.
+      Warning: do not resolve transients in request handlers — resolve once at boot.
+    */
+    public transient(name: string, factory: any): void {
+        if (this.booted) {
+            throw new Error("Container is booted — cannot register '" + name + "'")
+        }
+        var binding = new Binding(BINDING_TRANSIENT, factory, null, null)
+        this.bindings[name] = binding
+        this.order.push(name)
+    }
+
+    /*
+      Register a plain value (config, constant, pre-built object).
+      No factory — the value is stored directly. Zero overhead on resolve().
+    */
+    public instance(name: string, value: any): void {
+        this.instances[name] = value
+        if (!this.booted) {
+            this.order.push(name)
+        }
+    }
+
+    // ── Boot ────────────────────────────────────────────────────────────
+
+    /*
+      Resolve all singleton and singletonAsync bindings in registration order.
+      Detects circular dependencies and throws with the full cycle path.
+      After boot:
+        - All singleton factories are dropped (GC can reclaim closures)
+        - resolve() is a single map read
+        - No further registrations are allowed
+    */
+    public async bootAsync(): Task<any> {
+        if (this.booted) {
+            throw new Error("Container is already booted")
+        }
+
+        for (var i = 0; i < this.order.length; i = i + 1) {
+            var name: string = this.order[i]
+            var entry: any = this.bindings[name]
+            if (entry == null) {
+                continue
+            }
+
+            var binding: Binding = entry
+
+            if (binding.kind == BINDING_SINGLETON) {
+                this.resolveSingleton(name, binding)
+            }
+
+            if (binding.kind == BINDING_SINGLETON_ASYNC) {
+                await this.resolveSingletonAsync(name, binding)
+            }
+        }
+
+        // Drop all singleton factories — free memory
+        for (var i = 0; i < this.order.length; i = i + 1) {
+            var name: string = this.order[i]
+            var entry: any = this.bindings[name]
+            if (entry != null) {
+                var binding: Binding = entry
+                if (binding.kind == BINDING_SINGLETON || binding.kind == BINDING_SINGLETON_ASYNC) {
+                    binding.factory = null
+                    binding.asyncFactory = null
+                }
+            }
+        }
+
+        this.booted = true
+        return null
+    }
+
+    // ── Internal: Resolve a sync singleton with cycle detection ─────────
+
+    private resolveSingleton(name: string, binding: Binding): void {
+        if (binding.resolved) {
+            return
+        }
+
+        // Circular dependency check
+        if (this.resolving[name] == true) {
+            var cycle: string = this.buildCyclePath(name)
+            this.resolving = {}
+            throw new Error("Circular dependency detected: " + cycle)
+        }
+
+        this.resolving[name] = true
+        var result: any = binding.factory(this)
+        this.resolving[name] = false
+
+        binding.resolved = true
+        binding.value = result
+        this.instances[name] = result
+    }
+
+    // ── Internal: Resolve an async singleton with cycle detection ───────
+
+    private async resolveSingletonAsync(name: string, binding: Binding): Task<any> {
+        if (binding.resolved) {
+            return null
+        }
+
+        // Circular dependency check
+        if (this.resolving[name] == true) {
+            var cycle: string = this.buildCyclePath(name)
+            this.resolving = {}
+            throw new Error("Circular dependency detected: " + cycle)
+        }
+
+        this.resolving[name] = true
+        var result: any = await binding.asyncFactory(this)
+        this.resolving[name] = false
+
+        binding.resolved = true
+        binding.value = result
+        this.instances[name] = result
+        return null
+    }
+
+    // ── Internal: Build a readable cycle path string ────────────────────
+
+    private buildCyclePath(target: string): string {
+        var path: string = ""
+        for (var i = 0; i < this.order.length; i = i + 1) {
+            var name: string = this.order[i]
+            if (this.resolving[name] == true) {
+                if (path.length > 0) {
+                    path = path + " → "
+                }
+                path = path + name
+            }
+        }
+        path = path + " → " + target
+        return path
+    }
+
+    // ── Resolution ──────────────────────────────────────────────────────
+
+    /*
+      Resolve a dependency by name.
+      After bootAsync(): returns the cached singleton — single map read.
+      Before bootAsync(): resolves sync singletons and transients on demand.
+      Throws if the binding does not exist.
+    */
+    public resolve(name: string): any {
+        // Fast path: already in instances (post-boot singletons + instance bindings)
+        var cached: any = this.instances[name]
+        if (cached != null) {
+            return cached
+        }
+
+        // Check bindings for transient or unresolved singleton
+        var entry: any = this.bindings[name]
+        if (entry == null) {
+            throw new Error("Container: '" + name + "' is not registered")
+        }
+
+        var binding: Binding = entry
+
+        // Transient — call factory every time
+        if (binding.kind == BINDING_TRANSIENT) {
+            // Circular dependency check for transients
+            if (this.resolving[name] == true) {
+                var cycle: string = this.buildCyclePath(name)
+                this.resolving = {}
+                throw new Error("Circular dependency detected: " + cycle)
+            }
+            this.resolving[name] = true
+            var result: any = binding.factory(this)
+            this.resolving[name] = false
+            return result
+        }
+
+        // Sync singleton not yet resolved (pre-boot resolve)
+        if (binding.kind == BINDING_SINGLETON && !binding.resolved) {
+            this.resolveSingleton(name, binding)
+            return this.instances[name]
+        }
+
+        throw new Error("Container: '" + name + "' cannot be resolved synchronously — use resolveAsync()")
+    }
+
+    /*
+      Resolve a dependency asynchronously.
+      Required for singletonAsync bindings before bootAsync() is called.
+      After bootAsync(), resolve() works for everything.
+    */
+    public async resolveAsync(name: string): Task<any> {
+        // Fast path: already resolved
+        var cached: any = this.instances[name]
+        if (cached != null) {
+            return cached
+        }
+
+        var entry: any = this.bindings[name]
+        if (entry == null) {
+            throw new Error("Container: '" + name + "' is not registered")
+        }
+
+        var binding: Binding = entry
+
+        if (binding.kind == BINDING_SINGLETON_ASYNC && !binding.resolved) {
+            await this.resolveSingletonAsync(name, binding)
+            return this.instances[name]
+        }
+
+        if (binding.kind == BINDING_SINGLETON && !binding.resolved) {
+            this.resolveSingleton(name, binding)
+            return this.instances[name]
+        }
+
+        if (binding.kind == BINDING_TRANSIENT) {
+            if (this.resolving[name] == true) {
+                var cycle: string = this.buildCyclePath(name)
+                this.resolving = {}
+                throw new Error("Circular dependency detected: " + cycle)
+            }
+            this.resolving[name] = true
+            var result: any = binding.factory(this)
+            this.resolving[name] = false
+            return result
+        }
+
+        throw new Error("Container: '" + name + "' is not registered")
+    }
+
+    // ── Inspection ──────────────────────────────────────────────────────
+
+    /*
+      Check if a binding exists by name.
+    */
+    public has(name: string): bool {
+        var cached: any = this.instances[name]
+        if (cached != null) {
+            return true
+        }
+        var entry: any = this.bindings[name]
+        return entry != null
+    }
+
+    /*
+      Return a list of all registered binding names.
+    */
+    public keys(): []string {
+        var result: []string = []
+        for (var i = 0; i < this.order.length; i = i + 1) {
+            result.push(this.order[i])
+        }
+        return result
+    }
+}

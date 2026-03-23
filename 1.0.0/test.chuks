@@ -1,0 +1,150 @@
+import { Container } from "./src/index"
+
+// ─── Test 1: Basic singleton + instance ─────────────────────────────────────
+
+println("=== Test 1: Basic singleton + instance ===")
+var c = new Container()
+
+c.instance("port", 3000)
+c.singleton("config", function(c: Container): any {
+    return { "env": "test", "port": c.resolve("port") }
+})
+
+await c.bootAsync()
+
+var config: any = c.resolve("config")
+println("config.env: " + config.env)
+println("port: " + string(c.resolve("port")))
+println("has config: " + string(c.has("config")))
+println("has unknown: " + string(c.has("unknown")))
+println("keys: " + string(c.keys()))
+
+// ─── Test 2: Dependency chain ───────────────────────────────────────────────
+
+println("")
+println("=== Test 2: Dependency chain ===")
+var c2 = new Container()
+
+c2.singleton("a", function(c: Container): any {
+    return "value-a"
+})
+c2.singleton("b", function(c: Container): any {
+    return c.resolve("a") + "+value-b"
+})
+c2.singleton("c", function(c: Container): any {
+    return c.resolve("b") + "+value-c"
+})
+
+await c2.bootAsync()
+
+println("a: " + c2.resolve("a"))
+println("b: " + c2.resolve("b"))
+println("c: " + c2.resolve("c"))
+
+// ─── Test 3: Singleton runs once ────────────────────────────────────────────
+
+println("")
+println("=== Test 3: Singleton runs once ===")
+var c3 = new Container()
+var callCount: int = 0
+
+c3.singleton("service", function(c: Container): any {
+    callCount = callCount + 1
+    return "instance-" + string(callCount)
+})
+
+await c3.bootAsync()
+
+var r1: any = c3.resolve("service")
+var r2: any = c3.resolve("service")
+println("resolve 1: " + r1)
+println("resolve 2: " + r2)
+println("same instance: " + string(r1 == r2))
+println("factory called: " + string(callCount) + " time(s)")
+
+// ─── Test 4: Transient creates new each time ────────────────────────────────
+
+println("")
+println("=== Test 4: Transient ===")
+var c4 = new Container()
+var tCount: int = 0
+
+c4.transient("id", function(c: Container): any {
+    tCount = tCount + 1
+    return "id-" + string(tCount)
+})
+
+await c4.bootAsync()
+
+println("resolve 1: " + string(c4.resolve("id")))
+println("resolve 2: " + string(c4.resolve("id")))
+println("resolve 3: " + string(c4.resolve("id")))
+println("factory called: " + string(tCount) + " time(s)")
+
+// ─── Test 5: Circular dependency detection ──────────────────────────────────
+
+println("")
+println("=== Test 5: Circular dependency detection ===")
+var c5 = new Container()
+
+c5.singleton("x", function(c: Container): any {
+    return c.resolve("y")
+})
+c5.singleton("y", function(c: Container): any {
+    return c.resolve("x")
+})
+
+try {
+    await c5.bootAsync()
+    println("ERROR: should have thrown")
+} catch (e) {
+    println("caught: " + string(e))
+}
+
+// ─── Test 6: Three-way cycle ────────────────────────────────────────────────
+
+println("")
+println("=== Test 6: Three-way cycle ===")
+var c6 = new Container()
+
+c6.singleton("p", function(c: Container): any { return c.resolve("q") })
+c6.singleton("q", function(c: Container): any { return c.resolve("r") })
+c6.singleton("r", function(c: Container): any { return c.resolve("p") })
+
+try {
+    await c6.bootAsync()
+    println("ERROR: should have thrown")
+} catch (e) {
+    println("caught: " + string(e))
+}
+
+// ─── Test 7: Resolve unknown throws ────────────────────────────────────────
+
+println("")
+println("=== Test 7: Resolve unknown throws ===")
+var c7 = new Container()
+await c7.bootAsync()
+
+try {
+    c7.resolve("nope")
+    println("ERROR: should have thrown")
+} catch (e) {
+    println("caught: " + string(e))
+}
+
+// ─── Test 8: Cannot register after boot ─────────────────────────────────────
+
+println("")
+println("=== Test 8: Cannot register after boot ===")
+var c8 = new Container()
+await c8.bootAsync()
+
+try {
+    c8.singleton("late", function(c: Container): any { return "late" })
+    println("ERROR: should have thrown")
+} catch (e) {
+    println("caught: " + string(e))
+}
+
+println("")
+println("=== All tests passed ===")

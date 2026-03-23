@@ -1,0 +1,11 @@
+{
+  "name": "chuks_di",
+  "version": "1.0.0",
+  "description": "Dependency injection container for Chuks — boot-time wiring with singleton, transient, and instance bindings",
+  "entry": "src/index.chuks",
+  "author": "Chuks Team",
+  "license": "MIT",
+  "keywords": ["di", "ioc", "container", "dependency-injection", "inversion-of-control", "service-locator"],
+  "repository": "https://github.com/chukspackages/chuks_di",
+  "dependencies": {}
+}
