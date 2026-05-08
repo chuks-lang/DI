@@ -1,7 +1,7 @@
 {
   "name": "di",
-  "version": "1.0.0",
-  "description": "Dependency injection container for Chuks — boot-time wiring with singleton, transient, and instance bindings",
+  "version": "1.0.10",
+  "description": "Dependency injection container for Chuks \u2014 boot-time wiring with singleton, transient, and instance bindings",
   "entry": "src/index.chuks",
   "author": "Chuks Team",
   "license": "MIT",
